@@ -1,0 +1,32 @@
+[tool.poetry]
+name = "transactions-databases"
+version = "0.1.0"
+description = ""
+authors = []
+readme = "README.md"
+packages = [{include = "transac"}]
+
+[tool.poetry.dependencies]
+python = "^3.10"
+fastapi = "^0.92.0"
+databases = {extras = ["asyncpg"], version = "^0.7.0"}
+uvicorn = {extras = ["standard"], version = "^0.20.0"}
+alembic = "^1.9.4"
+psycopg2 = "^2.9.5"
+pytest = "^7.2.1"
+httpx = "^0.23.3"
+
+[tool.poetry.group.dev.dependencies]
+black = "^23.1.0"
+isort = "^5.12.0"
+flake8 = "^6.0.0"
+
+[build-system]
+requires = ["poetry-core"]
+build-backend = "poetry.core.masonry.api"
+
+[tool.isort]
+profile = "black"
+
+[tool.black]
+line-length = 88
