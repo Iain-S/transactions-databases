@@ -1,8 +1,6 @@
 import asyncio
-from typing import Union
 
 import databases
-import psycopg2
 import uvicorn
 from asyncpg.exceptions import LockNotAvailableError
 from fastapi import FastAPI
@@ -17,16 +15,16 @@ database = databases.Database(CONNECTION_DSN)
 # 4s is plenty of time to manually start two requests
 SLEEP_FOR = 4
 
-lock = asyncio.Lock()
-
 
 @app.on_event("startup")
 async def startup() -> None:
+    """Called by FastAPI on startup."""
     await database.connect()
 
 
 @app.on_event("shutdown")
 async def shutdown() -> None:
+    """Called by FastAPI on shutdown."""
     await database.disconnect()
 
 
@@ -44,22 +42,9 @@ async def read_root():
     return {"hello": str(results)}
 
 
-@app.get("/show-table")
-async def show_table():
-    """Show all the rows in test_table."""
-    results = [
-        {**x} for x in await database.fetch_all(text("select * from test_table"))
-    ]
-    return results
-
-
-@app.get("/nowait")
-async def nowait():
-    """Avoid race conditions with NOWAIT.
-
-    This stops the race condition,
-    but you need to handle the exception.
-    """
+@app.get("/with-transaction")
+async def with_transaction():
+    """Do an insert within a transaction."""
     async with database.connection() as connection:
         async with connection.transaction():
             try:
@@ -83,78 +68,88 @@ async def nowait():
     return {"hello": str(max_id)}
 
 
-@app.get("/for-update")
-async def for_update():
-    """Using FOR UPDATE does not stop the race condition."""
-    async with database.connection() as connection:
+@app.get("/show-table")
+async def show_table():
+    """Show all the rows in test_table."""
+    results = [
+        {**x} for x in await database.fetch_all(text("select * from test_table"))
+    ]
+    return results
+
+
+async def the_task(db):
+    """Selects and sleeps."""
+    async with db.transaction():
+        await db.fetch_one("SELECT 1")
+        await asyncio.sleep(1)
+        await db.fetch_one("SELECT 1")
+
+
+@app.get("/deadlock")
+async def deadlock():
+    """This will deadlock.
+
+    The child tasks will inherit the connection created by the parent SELECT.
+    Taken from https://github.com/encode/databases/issues/327"""
+
+    # Doesn't deadlock if we remove this
+    await database.fetch_one("SELECT 1")
+
+    tasks = [the_task(database) for _ in range(2)]
+    await asyncio.gather(*tasks)
+
+
+async def the_other_task(db):
+    """As per the_task but with a shorter wait."""
+    async with db.transaction():
+        await db.fetch_one("SELECT 1")
+        await asyncio.sleep(0.5)
+        await db.fetch_one("SELECT 1")
+
+
+@app.get("/deadlock2")
+async def deadlock2():
+    """This will not deadlock.
+
+    The child tasks will have different connections, presumably.
+    """
+
+    tasks = [the_other_task(database), the_task(database)]
+    await asyncio.gather(*tasks)
+
+
+@app.get("/nested")
+async def nested():
+    """Doesn't deadlock.
+
+    We don't run multiple tasks concurrently,
+    we only check that we can nest transactions."""
+    async with database.transaction():
+        await database.fetch_one("SELECT 1")
+        # Note that we aren't gathering any tasks here
+        await the_task(database)
+        await database.fetch_one("SELECT 1")
+
+
+async def connection_task(db):
+    async with db.connection() as connection:
         async with connection.transaction():
-            results = await database.fetch_all(
-                text("select id from test_table for update")
-            )
-            await asyncio.sleep(SLEEP_FOR)
-            max_id = max([x["id"] for x in results])
-            await database.execute(
-                text("insert into test_table values ({}, {})".format(max_id + 1, 0))
-            )
-
-    return {"hello": str(max_id)}
+            await connection.fetch_one("SELECT 1")
+            await asyncio.sleep(1)
+            await connection.fetch_one("SELECT 1")
 
 
-@app.get("/table-lock")
-async def table_lock():
-    """Avoid race conditions with LOCK.
+@app.get("/connections")
+async def connections():
+    """This will deadlock.
 
-    This stops the race condition, but you need to be careful to avoid deadlock.
-    """
+    The child tasks will inherit the connection created by the parent SELECT."""
+
     async with database.connection() as connection:
-        async with connection.transaction():
-            await database.execute(text("lock table test_table"))
-            results = await database.execute(text("select count(*) from test_table"))
-            await asyncio.sleep(SLEEP_FOR)
-            await database.execute(
-                text("insert into test_table values ({}, {})".format(results + 1, 0))
-            )
+        await connection.fetch_one("SELECT 1")
 
-    return {"hello": str(results)}
-
-
-@app.get("/asyncio-lock")
-async def asyncio_lock():
-    """Avoid race conditions with asyncio.Lock.
-
-    This stops the race condition, but only if there's a single uvicorn worker.
-    """
-    async with lock:
-        results = await database.execute(text("select count(*) from test_table"))
-        await asyncio.sleep(SLEEP_FOR)
-        await database.execute(
-            text("insert into test_table values ({}, {})".format(results + 1, 0))
-        )
-
-    return {"hello": str(results)}
-
-
-@app.get("/sync")
-def sync():
-    """Avoid race conditions with a normal function.
-
-    This stops the race condition, but only if there's a single uvicorn worker.
-    """
-
-    # Note that we need to use a synchronous db library
-    conn = psycopg2.connect(CONNECTION_DSN)
-    cur = conn.cursor()
-    cur.execute("SELECT count(*) FROM test_table")
-    records = cur.fetchall()
-    next_id = records[0][0] + 1
-    cur.execute("INSERT INTO test_table VALUES (%s, 0)", (next_id,))
-
-    return records
-
-
-@app.get("/items/{item_id}")
-def read_item(item_id: int, q: Union[str, None] = None):
-    return {"item_id": item_id, "q": q}
+        tasks = [connection_task(database) for _ in range(4)]
+        await asyncio.gather(*tasks)
 
 
 if __name__ == "__main__":

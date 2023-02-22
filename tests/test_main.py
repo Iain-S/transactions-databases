@@ -26,47 +26,22 @@ def test_read_root(client) -> None:
                 future.result()
 
 
-def test_nowait(client) -> None:
+def test_deadlock(client) -> None:
+    client.get("/deadlock")
+
+
+def test_deadlock2(client) -> None:
+    client.get("/deadlock2")
+
+
+def test_nested(client) -> None:
     futures = []
-    with ThreadPoolExecutor(max_workers=2) as executor:
-        for _ in range(2):
-            futures.append(executor.submit(client.get, "/nowait"))
+    with ThreadPoolExecutor(max_workers=4) as executor:
+        for _ in range(4):
+            futures.append(executor.submit(client.get, "/nested"))
         for future in futures:
             future.result()
 
 
-def test_for_update(client) -> None:
-    futures = []
-    with ThreadPoolExecutor(max_workers=2) as executor:
-        for _ in range(2):
-            futures.append(executor.submit(client.get, "/for-update"))
-        with pytest.raises(UniqueViolationError):
-            for future in futures:
-                future.result()
-
-
-def test_table_lock(client) -> None:
-    futures = []
-    with ThreadPoolExecutor(max_workers=2) as executor:
-        for _ in range(2):
-            futures.append(executor.submit(client.get, "/table-lock"))
-        for future in futures:
-            future.result()
-
-
-def test_asyncio_lock(client) -> None:
-    futures = []
-    with ThreadPoolExecutor(max_workers=2) as executor:
-        for _ in range(2):
-            futures.append(executor.submit(client.get, "/asyncio-lock"))
-        for future in futures:
-            future.result()
-
-
-def test_sync(client) -> None:
-    futures = []
-    with ThreadPoolExecutor(max_workers=2) as executor:
-        for _ in range(2):
-            futures.append(executor.submit(client.get, "/sync"))
-        for future in futures:
-            future.result()
+def test_connections(client) -> None:
+    client.get("/connections")
